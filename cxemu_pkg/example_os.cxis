@@ -1,0 +1,162 @@
+; example_os.cxis — minimal CXIS OS skeleton using ABIOS
+; Assemble: cxas example_os.cxis -o example_os.cxo
+;           cxld example_os.cxo  -o example_os.cxe
+; Run:      cxemu example_os.cxe disk0.img
+
+section rodata:
+global msg_boot:
+    db "CXIS-OS v0.1 booting...", 10, 0
+global msg_prompt:
+    db "> ", 0
+global msg_unknown:
+    db "Unknown command", 10, 0
+global msg_help:
+    db "Commands: help  info  clear  halt", 10, 0
+global cmd_help:
+    db "help", 0
+global cmd_info:
+    db "info", 0
+global cmd_clear:
+    db "clear", 0
+global cmd_halt:
+    db "halt", 0
+
+section bss:
+global input_buf:
+    resb 128
+
+section text:
+global _start:
+    ; --- ABIOS: VID clear screen (int 0x12 = ABIOS VIDEO) ---
+    mov  0,  a0        ; fn = VID_CLEAR
+    mov  7,  a1        ; attr = light gray on black
+    int  0x12
+
+    ; --- print boot message via ABIOS console ---
+    mov  2,  a0        ; fn = CON_PUTS (null-terminated)
+    mov  msg_boot, a1
+    int  0x10
+
+    ; --- query system info ---
+    mov  0,  a0        ; fn = SI_CPUID
+    int  0x17
+    ; a0=sig a1=ver a2=features (ignore for now)
+
+    ; --- main shell loop ---
+shell_loop:
+    mov  2,  a0        ; CON_PUTS
+    mov  msg_prompt, a1
+    int  0x10
+
+    ; read line into input_buf
+    mov  4,  a0        ; CON_READLINE
+    mov  input_buf, a1
+    mov  127, a2
+    int  0x10           ; a0 = chars read
+
+    ; dispatch commands
+    mov  input_buf, a0
+    mov  cmd_help, a1
+    call strcmp4
+    eq   a0, 0, c0
+    je   c0, do_help
+
+    mov  input_buf, a0
+    mov  cmd_info, a1
+    call strcmp4
+    eq   a0, 0, c0
+    je   c0, do_info
+
+    mov  input_buf, a0
+    mov  cmd_clear, a1
+    call strcmp4
+    eq   a0, 0, c0
+    je   c0, do_clear
+
+    mov  input_buf, a0
+    mov  cmd_halt, a1
+    call strcmp4
+    eq   a0, 0, c0
+    je   c0, do_halt
+
+    ; unknown command
+    mov  2,  a0
+    mov  msg_unknown, a1
+    int  0x10
+    goto shell_loop
+
+do_help:
+    mov  2,  a0
+    mov  msg_help, a1
+    int  0x10
+    goto shell_loop
+
+do_info:
+    ; print sysinfo via ABIOS
+    mov  0,  a0        ; SI_CPUID
+    int  0x17
+    mov  5,  a0        ; CON_PRINT_HEX (print sig)
+    ; reuse a0 for fn, need to save sig
+    ; for simplicity: print mem total
+    mov  1,  a0        ; SI_MEMSIZE
+    int  0x17          ; a0 = total RAM bytes
+    mov  i0, i0        ; nop
+    mov  6,  a0        ; CON_PRINT_HEX
+    mov  a0, a1        ; ... this won't work cleanly without save/restore
+    ; just print uptime
+    mov  3,  a0        ; TIMER_UPTIME
+    int  0x15          ; a0 = seconds
+    mov  a0, i8        ; save
+    mov  5,  a0        ; CON_PRINT_INT
+    mov  i8, a1
+    int  0x10
+    mov  2,  a0
+    mov  msg_boot, a1  ; reuse (has newline at end)
+    int  0x10
+    goto shell_loop
+
+do_clear:
+    mov  0,  a0        ; VID_CLEAR
+    mov  7,  a1
+    int  0x12
+    goto shell_loop
+
+do_halt:
+    mov  0,  a0        ; PWR_SHUTDOWN
+    mov  0,  a1
+    int  0x16
+
+; --- 4-char strcmp (compare until null or diff) ---
+global strcmp4:
+    push i8
+    push i9
+    push i10
+    push i11
+    mov  a0, i8
+    mov  a1, i9
+scmp_loop:
+    movb [i8], i10
+    movb [i9], i11
+    eq   i10, i11, c0
+    jne  c0, scmp_diff
+    eq   i10, 0, c0
+    je   c0, scmp_eq
+    inc  i8
+    inc  i9
+    goto scmp_loop
+scmp_eq:
+    mov  0, a0
+    goto scmp_ret
+scmp_diff:
+    cmp  i10, i11, c0
+    jl   c0, scmp_lt
+    mov  1, a0
+    goto scmp_ret
+scmp_lt:
+    mov  -1, a0
+scmp_ret:
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret

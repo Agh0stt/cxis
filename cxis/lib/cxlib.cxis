@@ -1,0 +1,235 @@
+section text:
+
+global print_char:
+    int  0x02
+    ret
+
+global print_newline:
+    mov  10, a0
+    int  0x02
+    ret
+
+global print_str:
+    int  0x01
+    ret
+
+global print_cstr:
+    push i8
+    push i9
+    push i10
+    mov  a0, i8
+    mov  i8, i9
+    mov  0, i10
+pcstr_scan:
+    movb [i9], i11
+    eq   i11, 0, c0
+    je   c0, pcstr_emit
+    inc  i9
+    inc  i10
+    goto pcstr_scan
+pcstr_emit:
+    mov  i8, a0
+    mov  i10, a1
+    int  0x01
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+global print_int:
+    push i8
+    push i9
+    push i10
+    push i11
+    push i12
+    mov  a0, i8
+    mov  0,  i9
+    mov  0,  i10
+    cmp  i8, 0, c0
+    jge  c0, pint_pos
+    neg  i8, i8
+    mov  1, i10
+pint_pos:
+    eq   i8, 0, c0
+    jne  c0, pint_loop
+    mov  48, a0
+    int  0x02
+    goto pint_done
+pint_loop:
+    eq   i8, 0, c0
+    je   c0, pint_emit
+    div  i8, 10, i11
+    mul  i11, 10, i12
+    sub  i8, i12, i12
+    add  i12, 48, i12
+    push i12
+    inc  i9
+    mov  i11, i8
+    goto pint_loop
+pint_emit:
+    eq   i10, 0, c0
+    je   c0, pint_nomin
+    mov  45, a0
+    int  0x02
+pint_nomin:
+pint_pop:
+    eq   i9, 0, c0
+    je   c0, pint_done
+    pop  i11
+    mov  i11, a0
+    int  0x02
+    dec  i9
+    goto pint_pop
+pint_done:
+    pop  i12
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+global print_hex:
+    push i8
+    push i9
+    push i10
+    push i11
+    mov  a0, i8
+    mov  48, a0
+    int  0x02
+    mov  120, a0
+    int  0x02
+    mov  7, i9
+phex_loop:
+    cmp  i9, 0, c0
+    jl   c0, phex_done
+    mul  i9, 4, i10
+    shr  i8, i10, i11
+    and  i11, 15, i11
+    cmp  i11, 10, c0
+    jl   c0, phex_digit
+    add  i11, 87, i11
+    goto phex_print
+phex_digit:
+    add  i11, 48, i11
+phex_print:
+    mov  i11, a0
+    int  0x02
+    dec  i9
+    goto phex_loop
+phex_done:
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+global strlen:
+    push i8
+    push i9
+    mov  a0, i8
+    mov  0,  i9
+slen_loop:
+    movb [i8], i10
+    eq   i10, 0, c0
+    je   c0, slen_done
+    inc  i8
+    inc  i9
+    goto slen_loop
+slen_done:
+    mov  i9, a0
+    pop  i9
+    pop  i8
+    ret
+
+global memset:
+    push i8
+    push i9
+    push i10
+    mov  a0, i8
+    mov  a1, i9
+    mov  a2, i10
+mset_loop:
+    eq   i10, 0, c0
+    je   c0, mset_done
+    movb i9, [i8]
+    inc  i8
+    dec  i10
+    goto mset_loop
+mset_done:
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+global memcpy:
+    push i8
+    push i9
+    push i10
+    push i11
+    mov  a0, i8
+    mov  a1, i9
+    mov  a2, i10
+mcpy_loop:
+    eq   i10, 0, c0
+    je   c0, mcpy_done
+    movb [i9], i11
+    movb i11, [i8]
+    inc  i8
+    inc  i9
+    dec  i10
+    goto mcpy_loop
+mcpy_done:
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+global strcmp:
+    push i8
+    push i9
+    push i10
+    push i11
+    mov  a0, i8
+    mov  a1, i9
+scmp_loop:
+    movb [i8], i10
+    movb [i9], i11
+    eq   i10, i11, c0
+    jne  c0, scmp_diff
+    eq   i10, 0,   c0
+    je   c0, scmp_equal
+    inc  i8
+    inc  i9
+    goto scmp_loop
+scmp_equal:
+    mov  0, a0
+    goto scmp_ret
+scmp_diff:
+    cmp  i10, i11, c0
+    jl   c0, scmp_less
+    mov  1, a0
+    goto scmp_ret
+scmp_less:
+    mov  -1, a0
+scmp_ret:
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+global malloc:
+    int  0x05
+    ret
+
+global free:
+    int  0x06
+    ret
+
+global time_ns:
+    int  0x07
+    ret
+
+global cxexit:
+    int  0x04

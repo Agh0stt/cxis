@@ -1,0 +1,84 @@
+section rodata:
+global str_fib:
+    db "fibonacci(10) = "
+    db 0
+global str_fact:
+    db "factorial(10)  = "
+    db 0
+
+section text:
+global _start:
+    mov  str_fib, a0
+    call print_cstr
+
+    mov  10, a0
+    call fibonacci
+    call print_int
+    call print_newline
+
+    mov  str_fact, a0
+    call print_cstr
+
+    mov  10, a0
+    call factorial
+    call print_int
+    call print_newline
+
+    mov  0xff, a0
+    call print_hex
+    call print_newline
+
+    mov  0, a0
+    int  0x04
+
+global fibonacci:
+    push i0
+    push i1
+    push i2
+    push i3
+    mov  a0, i0
+    mov  0, i1
+    mov  1, i2
+    eq   i0, 0, c0
+    je   c0, fib_zero
+    eq   i0, 1, c0
+    je   c0, fib_one
+fib_loop:
+    cmp  i0, 1, c0
+    jle  c0, fib_done
+    add  i1, i2, i3
+    mov  i2, i1
+    mov  i3, i2
+    dec  i0
+    goto fib_loop
+fib_done:
+    mov  i2, a0
+    goto fib_ret
+fib_zero:
+    mov  0, a0
+    goto fib_ret
+fib_one:
+    mov  1, a0
+fib_ret:
+    pop  i3
+    pop  i2
+    pop  i1
+    pop  i0
+    ret
+
+global factorial:
+    push i0
+    push i1
+    mov  a0, i0
+    mov  1, i1
+fact_loop:
+    cmp  i0, 1, c0
+    jle  c0, fact_done
+    mul  i1, i0, i1
+    dec  i0
+    goto fact_loop
+fact_done:
+    mov  i1, a0
+    pop  i1
+    pop  i0
+    ret

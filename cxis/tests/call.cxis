@@ -1,0 +1,18 @@
+; test call/ret and stack
+section rodata:
+global greet:
+    db "called function ok"
+    db 10
+
+section text:
+global _start:
+    call my_func
+    mov 0, a0
+    int 0x04
+
+global my_func:
+    mov 0x00002000, a0
+    mov 19, a1
+    int 0x01
+    ret
+
