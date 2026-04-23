@@ -1,0 +1,14 @@
+; test arithmetic: compute 3*7+1 = 22, print as char 'V' (86... close enough, use mod)
+; actually: 3*7=21, 21+ord('0')=69='E', print E
+section text:
+global _start:
+    mov 3, i0
+    mov 7, i1
+    mul i0, i1, i2      ; i2 = 21
+    add i2, 48, i3      ; i3 = 69 = 'E'... wait 21+48=69='E' yes
+    mov i3, a0
+    int 0x02            ; print 'E'
+    mov 10, a0
+    int 0x02
+    mov 0, a0
+    int 0x04
