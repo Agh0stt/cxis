@@ -1,0 +1,9 @@
+section text:
+global _start:
+    call func
+    mov i0, a0
+    int 0x04
+func:
+    mov 77, i0
+    ret
+

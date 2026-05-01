@@ -1,0 +1,8 @@
+section text:
+global _start:
+    mov 240, i0
+    mov 15, i1
+    and i0, i1, i2
+    mov i2, a0
+    int 0x04
+

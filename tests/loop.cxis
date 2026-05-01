@@ -1,0 +1,20 @@
+; prints 0 to 9 using add reg,imm,dst form
+section text:
+global _start:
+    mov 0, i0
+    mov 10, i1
+
+loop_top:
+    cmp i0, i1, c0
+    jge c0, done
+    add i0, 48, i2
+    mov i2, a0
+    int 0x02
+    mov 10, a0
+    int 0x02
+    inc i0
+    goto loop_top
+
+done:
+    mov 0, a0
+    int 0x04

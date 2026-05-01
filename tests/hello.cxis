@@ -1,0 +1,12 @@
+section rodata:
+global msg:
+    db "Hello, CXIS!"
+    db 10
+
+section text:
+global _start:
+    mov 0x00002000, a0
+    mov 14, a1
+    int 0x01
+    mov 0, a0
+    int 0x04

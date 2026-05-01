@@ -1,0 +1,1136 @@
+; ════════════════════════════════════════════════════════════════
+; abios.cxis  —  CXIS Advanced BIOS v2.0
+; Loaded at 0x0500.  Entry: abios_reset (called by reset stub).
+;
+; Boot flow:
+;   CPU reset → abios_reset
+;   → ADA init → IVT install → POST (CPU/FPU/RAM/Video/CMOS/Disk)
+;   → 3-second F2 window  (press F2 or '2' → BIOS Setup menu)
+;   → boot summary (disk, RTC time)
+;   → goto 0x1C00 (bootloader)
+;
+; ABIOS Data Area  (base = 0x00001000):
+;   +0x00  ADA_TICK_LO    uint32  tick lo (ms)
+;   +0x04  ADA_TICK_HI    uint32  tick hi
+;   +0x08  ADA_KHEAD      uint8   keyboard ring head
+;   +0x09  ADA_KTAIL      uint8   keyboard ring tail
+;   +0x0A  ADA_KCOUNT     uint8   keyboard pending
+;   +0x0C  ADA_CUR_X      uint8   cursor col
+;   +0x0D  ADA_CUR_Y      uint8   cursor row
+;   +0x0E  ADA_ATTR       uint8   text attribute (0x07 = lgray/black)
+;   +0x0F  ADA_DISK_CNT   uint8   disk count (written by POST)
+;   +0x10  ADA_HEAP_PTR   uint32  heap bump ptr (0x02000000)
+;   +0x14  ADA_BOOT_DISK  uint8   selected boot disk id
+;   +0x15  ADA_CMOS_BOOT  uint8   CMOS preferred boot disk (0xFF=auto)
+;   +0x16  ADA_CMOS_FLAGS uint8   CMOS flags (bit 0 = verbose POST)
+;   +0x17  ADA_POST_CODE  uint8   last POST checkpoint code
+;   +0x18  ADA_RTC_SEC    uint8   uptime seconds (0-59)
+;   +0x19  ADA_RTC_MIN    uint8   uptime minutes (0-59)
+;   +0x1A  ADA_RTC_HOUR   uint8   uptime hours
+;   +0x1B  ADA_RTC_DAY    uint8   day (fixed 1)
+;   +0x1C  ADA_RTC_MON    uint8   month (fixed 1)
+;   +0x1D  ADA_RTC_YEAR   uint8   year offset (fixed 0)
+;   +0x20  ADA_BIOS_FLAG  uint32  0x00AB1050 presence magic
+;   +0x24  ADA_CMOS_SIG   uint32  0xC0FFEE00 = CMOS valid
+;
+; ABIOS interrupt vectors (emulator-handled):
+;   Legacy  0x01=console 0x02=keyboard 0x03=video 0x04=disk
+;           0x05=memory  0x06=timer    0x07=power 0x08=sysinfo 0x09=IRQ
+;   New OS  0x10-0x18 mirror the above
+;
+; Keyboard F2 detection:
+;   Emulator returns ASCII 0x3C for F2 key, or '2' (0x32) as proxy.
+; ════════════════════════════════════════════════════════════════
+
+; ════════════════════════════════════════════════════════════════
+section rodata:
+; ════════════════════════════════════════════════════════════════
+
+global s_sep_thick:
+    db "================================================================"
+    db 10
+    db 0
+
+global s_sep_thin:
+    db "----------------------------------------------------------------"
+    db 10
+    db 0
+
+global s_blank:
+    db 10
+    db 0
+
+global s_title1:
+    db "        CXIS ADVANCED BIOS  v2.0  (abios.cxis)"
+    db 10
+    db 0
+
+global s_title2:
+    db "        Copyright (C) CXEMU Project.  All rights reserved."
+    db 10
+    db 0
+
+global s_ivt_ok:
+    db "  [INIT] IVT installed (vectors 0x01-0x12)"
+    db 10
+    db 0
+
+; ── POST strings ─────────────────────────────────────────────
+global s_post_hdr:
+    db "  POWER-ON SELF TEST"
+    db 10
+    db 0
+
+global s_post_cpu:
+    db "  [POST 40] CPU ..................... "
+    db 0
+
+global s_post_fpu:
+    db "  [POST 50] FPU ..................... "
+    db 0
+
+global s_post_mem:
+    db "  [POST 60] Memory ................. "
+    db 0
+
+global s_post_vid:
+    db "  [POST 70] Video .................. "
+    db 0
+
+global s_post_cmos:
+    db "  [POST 80] CMOS/RTC ............... "
+    db 0
+
+global s_post_disk:
+    db "  [POST 90] Disk controller ........ "
+    db 0
+
+global s_ok:
+    db "OK"
+    db 10
+    db 0
+
+global s_fail:
+    db "FAIL"
+    db 10
+    db 0
+
+global s_cpu_detail:
+    db "             CPU: CXIS v1.1  features: FP+DBL+ABIOS"
+    db 10
+    db 0
+
+global s_fpu_ok:
+    db "             FPU: IEEE 754 single + double present"
+    db 10
+    db 0
+
+global s_mem_prefix:
+    db "             RAM: "
+    db 0
+
+global s_mem_mb:
+    db " MB installed"
+    db 10
+    db 0
+
+global s_vid_detail:
+    db "           Video: 80x25 text  VRAM @ 0x00C00000"
+    db 10
+    db 0
+
+global s_cmos_fresh:
+    db "            CMOS: no valid config -- defaults applied"
+    db 10
+    db 0
+
+global s_cmos_loaded:
+    db "            CMOS: config loaded from data area"
+    db 10
+    db 0
+
+global s_disk_none:
+    db "            Disk: no drives detected"
+    db 10
+    db 0
+
+global s_disk_found:
+    db "            Disk: "
+    db 0
+
+global s_disk_drives:
+    db " drive(s) present"
+    db 10
+    db 0
+
+global s_drive_label:
+    db "            Drive "
+    db 0
+
+global s_drive_sectors:
+    db " sectors"
+    db 10
+    db 0
+
+; ── boot summary strings ──────────────────────────────────────
+global s_boot_hdr:
+    db "  BOOT CONFIGURATION"
+    db 10
+    db 0
+
+global s_boot_disk_lbl:
+    db "  Boot disk:    #"
+    db 0
+
+global s_boot_disk_none:
+    db "  Boot disk:    (none -- no disks detected)"
+    db 10
+    db 0
+
+global s_boot_rtc_lbl:
+    db "  Uptime (RTC): "
+    db 0
+
+global s_rtc_colon:
+    db ":"
+    db 0
+
+global s_nl:
+    db 10
+    db 0
+
+; ── F2 countdown strings ──────────────────────────────────────
+global s_f2_prompt:
+    db "  Press F2 for BIOS Setup  |  any key to skip  |  auto-boot in "
+    db 0
+
+global s_f2_sec:
+    db " s  "
+    db 0
+
+global s_f2_cr:
+    db 13
+    db 0
+
+global s_f2_skip:
+    db 10
+    db 0
+
+global s_f2_entry:
+    db 10
+    db "  Entering BIOS Setup..."
+    db 10
+    db 0
+
+; ── BIOS Setup menu strings ───────────────────────────────────
+global s_setup_top:
+    db "================================================================"
+    db 10
+    db "                     CXIS BIOS SETUP v2.0"
+    db 10
+    db "================================================================"
+    db 10
+    db 0
+
+global s_setup_opt1:
+    db "  [1]  Boot disk preference ... "
+    db 0
+
+global s_setup_opt2:
+    db "  [2]  Verbose POST ........... "
+    db 0
+
+global s_setup_on:
+    db "ON"
+    db 10
+    db 0
+
+global s_setup_off:
+    db "OFF"
+    db 10
+    db 0
+
+global s_setup_auto:
+    db "auto"
+    db 10
+    db 0
+
+global s_setup_prompt:
+    db 10
+    db "  1=BootDisk  2=VerbPOST  S=Save+Exit  X=Exit  > "
+    db 0
+
+global s_setup_disk_q:
+    db "  Boot disk (0-3, A=auto): "
+    db 0
+
+global s_setup_saved:
+    db 10
+    db "  Settings saved.  Resuming boot..."
+    db 10
+    db 0
+
+global s_setup_exit:
+    db 10
+    db "  Exiting without save.  Resuming boot..."
+    db 10
+    db 0
+
+global s_setup_bad:
+    db "  Invalid."
+    db 10
+    db 0
+
+; ── handoff ───────────────────────────────────────────────────
+global s_handoff:
+    db 10
+    db "  POST complete.  Jumping to bootloader at 0x00001C00..."
+    db 10
+    db 0
+
+global s_no_boot:
+    db 10
+    db "  FATAL: No bootable disk.  System halted."
+    db 10
+    db 0
+
+
+; ════════════════════════════════════════════════════════════════
+section text:
+; ════════════════════════════════════════════════════════════════
+
+; ════════════════════════════════════════════════════════════════
+;  UTILITY ROUTINES
+; ════════════════════════════════════════════════════════════════
+
+; ── bios_print: print null-terminated string  a0=ptr ─────────
+global bios_print:
+    push i8
+    push i9
+    mov  a0, i8
+    mov  0,  i9
+bios_print_scan:
+    movb [i8], i10
+    eq   i10, 0, c0
+    je   c0, bios_print_do
+    inc  i8
+    inc  i9
+    goto bios_print_scan
+bios_print_do:
+    sub  i8, i9, i8
+    mov  i8, a0
+    mov  i9, a1
+    int  0x01
+    pop  i9
+    pop  i8
+    ret
+
+; ── bios_putchar: print single char  a0=char ─────────────────
+global bios_putchar:
+    int  0x02
+    ret
+
+; ── bios_print_dec: print uint32 decimal  a0=value ───────────
+global bios_print_dec:
+    push i8
+    push i9
+    push i10
+    push i11
+    mov  a0, i8
+    eq   i8, 0, c0
+    jne  c0, bios_pd_zero
+    goto bios_pd_nonzero
+bios_pd_zero:
+    mov  48, a0
+    call bios_putchar
+    goto bios_pd_done
+bios_pd_nonzero:
+    mov  0, i9
+bios_pd_extract:
+    eq   i8, 0, c0
+    je   c0, bios_pd_print
+    div  i8, 10, i10
+    mul  i10, 10, i11
+    sub  i8, i11, i11
+    add  i11, 48, i11
+    push i11
+    inc  i9
+    mov  i10, i8
+    goto bios_pd_extract
+bios_pd_print:
+    eq   i9, 0, c0
+    je   c0, bios_pd_done
+    pop  a0
+    call bios_putchar
+    dec  i9
+    goto bios_pd_print
+bios_pd_done:
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+; ── bios_print_hex8: print uint8 as 2-hex-digit  a0=val ──────
+global bios_print_hex8:
+    push i8
+    mov  a0, i8
+    shr  i8, 4, a0
+    and  a0, 0xF, a0
+    call bios_hex_nibble
+    and  i8, 0xF, a0
+    call bios_hex_nibble
+    pop  i8
+    ret
+
+bios_hex_nibble:
+    lte  a0, 9, c0
+    jne  c0, bios_hn_letter
+    add  a0, 48, a0
+    call bios_putchar
+    ret
+bios_hn_letter:
+    add  a0, 55, a0
+    call bios_putchar
+    ret
+
+; ── bios_get_ticks_ms: → a0 = ms since boot ──────────────────
+bios_get_ticks_ms:
+    mov  1, a0
+    int  0x06
+    ret
+
+; ── bios_sleep_ms: busy-wait  a0=ms ──────────────────────────
+bios_sleep_ms:
+    mov  a0, a1
+    mov  2, a0
+    int  0x06
+    ret
+
+; ── bios_kb_poll: non-blocking → a0=char or 0 ────────────────
+bios_kb_poll:
+    mov  1, a0
+    int  0x02
+    ret
+
+; ── bios_kb_read: blocking → a0=char ─────────────────────────
+bios_kb_read:
+    mov  0, a0
+    int  0x02
+    ret
+
+; ── bios_kb_flush ─────────────────────────────────────────────
+bios_kb_flush:
+    mov  2, a0
+    int  0x02
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  IVT INSTALLATION
+;  Writes address of bios_iret_stub into IVT slots 0x01-0x12.
+;  The emulator intercepts INT directly, so stubs are symbolic —
+;  they let OS code probe the IVT and see non-zero entries.
+; ════════════════════════════════════════════════════════════════
+
+bios_iret_stub:
+    iret
+
+bios_install_ivt:
+    push i8
+    mov  1, i8
+bios_ivt_loop:
+    ; IVT[n] is at address n*4
+    mul  i8, 4, i9
+    mov  bios_iret_stub, i10
+    mov  i10, [i9]
+    inc  i8
+    lte  i8, 0x12, c0
+    je   c0, bios_ivt_loop
+    pop  i8
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  CMOS ROUTINES  (stored in ADA area — no I/O port needed)
+; ════════════════════════════════════════════════════════════════
+
+; bios_cmos_valid: → c0=1 if signature present, 0 if fresh
+bios_cmos_valid:
+    push i8
+    mov  0x00001024, i8      ; ADA_CMOS_SIG
+    mov  [i8], i8
+    eq   i8, 0xC0FFEE00, c0  ; CMOS_SIG_VAL
+    pop  i8
+    ret
+
+; bios_cmos_defaults: write factory defaults
+bios_cmos_defaults:
+    push i8
+    push i9
+    ; boot disk = auto (0xFF)
+    mov  0x00001015, i8
+    mov  0xFF, i9
+    movb i9, [i8]
+    ; flags = 0
+    mov  0x00001016, i8
+    mov  0, i9
+    movb i9, [i8]
+    ; stamp signature
+    mov  0x00001024, i8
+    mov  0xC0FFEE00, i9
+    mov  i9, [i8]
+    pop  i9
+    pop  i8
+    ret
+
+; bios_cmos_init: load or apply defaults
+bios_cmos_init:
+    call bios_cmos_valid
+    jne  c0, bios_cmos_ok
+    call bios_cmos_defaults
+    mov  s_cmos_fresh, a0
+    call bios_print
+    ret
+bios_cmos_ok:
+    mov  s_cmos_loaded, a0
+    call bios_print
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  RTC SIMULATION  (derives HH:MM:SS from uptime ms)
+; ════════════════════════════════════════════════════════════════
+
+; bios_rtc_update: refresh ADA_RTC_* fields
+bios_rtc_update:
+    push i8
+    push i9
+    push i10
+    push i11
+    call bios_get_ticks_ms
+    mov  a0, i8              ; i8 = total ms
+    div  i8, 1000, i9        ; i9 = total seconds
+    ; seconds within minute
+    div  i9, 60, i10         ; i10 = total minutes
+    mul  i10, 60, i11
+    sub  i9, i11, i11
+    mov  0x00001018, i8
+    movb i11, [i8]           ; ADA_RTC_SEC
+    ; minutes within hour
+    div  i10, 60, i9         ; i9 = total hours
+    mul  i9, 60, i11
+    sub  i10, i11, i11
+    mov  0x00001019, i8
+    movb i11, [i8]           ; ADA_RTC_MIN
+    ; hours mod 24
+    div  i9, 24, i10
+    mul  i10, 24, i11
+    sub  i9, i11, i11
+    mov  0x0000101A, i8
+    movb i11, [i8]           ; ADA_RTC_HOUR
+    ; day/mon/year fixed
+    mov  0x0000101B, i8
+    mov  1, i11
+    movb i11, [i8]
+    mov  0x0000101C, i8
+    movb i11, [i8]
+    mov  0x0000101D, i8
+    mov  0, i11
+    movb i11, [i8]
+    pop  i11
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+; bios_print_rtc: prints  HH:MM:SS  (no newline)
+bios_print_rtc:
+    push i8
+    call bios_rtc_update
+    mov  0x0000101A, i8
+    movb [i8], a0
+    call bios_print_hex8
+    mov  s_rtc_colon, a0
+    call bios_print
+    mov  0x00001019, i8
+    movb [i8], a0
+    call bios_print_hex8
+    mov  s_rtc_colon, a0
+    call bios_print
+    mov  0x00001018, i8
+    movb [i8], a0
+    call bios_print_hex8
+    pop  i8
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  POST TESTS
+; ════════════════════════════════════════════════════════════════
+
+; ── post_set_code: write checkpoint to ADA_POST_CODE (0x1017)
+;    a0 = code
+bios_post_set:
+    push i8
+    mov  0x00001017, i8
+    movb a0, [i8]
+    pop  i8
+    ret
+
+; ── CPU check ────────────────────────────────────────────────
+bios_post_cpu:
+    push i8
+    mov  0x40, a0
+    call bios_post_set
+    mov  s_post_cpu, a0
+    call bios_print
+    ; CPUID: SI_CPUID=0x00, int 0x08
+    mov  0, a0
+    int  0x08
+    ; a0 should = 0x43584953 ("CXIS")
+    eq   a0, 0x43584953, c0
+    jne  c0, bios_post_cpu_fail
+    mov  s_ok, a0
+    call bios_print
+    mov  s_cpu_detail, a0
+    call bios_print
+    pop  i8
+    ret
+bios_post_cpu_fail:
+    mov  s_fail, a0
+    call bios_print
+    pop  i8
+    ret
+
+; ── FPU check ────────────────────────────────────────────────
+bios_post_fpu:
+    push i8
+    mov  0x50, a0
+    call bios_post_set
+    mov  s_post_fpu, a0
+    call bios_print
+    mov  0, a0
+    int  0x08              ; SI_CPUID, a2=features
+    and  a2, 3, i8         ; bits 0+1 = FLOAT|DOUBLE
+    eq   i8, 3, c0
+    jne  c0, bios_post_fpu_fail
+    mov  s_ok, a0
+    call bios_print
+    mov  s_fpu_ok, a0
+    call bios_print
+    pop  i8
+    ret
+bios_post_fpu_fail:
+    mov  s_fail, a0
+    call bios_print
+    pop  i8
+    ret
+
+; ── Memory check ─────────────────────────────────────────────
+bios_post_mem:
+    push i8
+    push i9
+    mov  0x60, a0
+    call bios_post_set
+    mov  s_post_mem, a0
+    call bios_print
+    ; SI_MEMSIZE=0x01
+    mov  1, a0
+    int  0x08
+    eq   a0, 0, c0
+    je   c0, bios_post_mem_fail
+    mov  s_ok, a0
+    call bios_print
+    ; re-query for detail
+    mov  1, a0
+    int  0x08
+    mov  a0, i8
+    shr  i8, 20, i9        ; i9 = MB
+    mov  s_mem_prefix, a0
+    call bios_print
+    mov  i9, a0
+    call bios_print_dec
+    mov  s_mem_mb, a0
+    call bios_print
+    pop  i9
+    pop  i8
+    ret
+bios_post_mem_fail:
+    mov  s_fail, a0
+    call bios_print
+    pop  i9
+    pop  i8
+    ret
+
+; ── Video check ──────────────────────────────────────────────
+bios_post_video:
+    push i8
+    mov  0x70, a0
+    call bios_post_set
+    mov  s_post_vid, a0
+    call bios_print
+    mov  s_ok, a0
+    call bios_print
+    mov  s_vid_detail, a0
+    call bios_print
+    pop  i8
+    ret
+
+; ── CMOS/RTC check ───────────────────────────────────────────
+bios_post_cmos:
+    push i8
+    mov  0x80, a0
+    call bios_post_set
+    mov  s_post_cmos, a0
+    call bios_print
+    mov  s_ok, a0
+    call bios_print
+    call bios_cmos_init
+    pop  i8
+    ret
+
+; ── Disk check ───────────────────────────────────────────────
+bios_post_disk:
+    push i8
+    push i9
+    push i10
+    mov  0x90, a0
+    call bios_post_set
+    mov  s_post_disk, a0
+    call bios_print
+    ; DISK_COUNT=0x03, int 0x04
+    mov  3, a0
+    int  0x04
+    mov  a0, i9            ; i9 = disk count
+    ; write to ADA_DISK_CNT
+    mov  0x0000100F, i8
+    movb i9, [i8]
+    mov  s_ok, a0
+    call bios_print
+    ; detail
+    eq   i9, 0, c0
+    je   c0, bios_post_disk_none
+    mov  s_disk_found, a0
+    call bios_print
+    mov  i9, a0
+    call bios_print_dec
+    mov  s_disk_drives, a0
+    call bios_print
+    ; enumerate each drive
+    mov  0, i10
+bios_post_disk_enum:
+    lt   i10, i9, c0
+    jne  c0, bios_post_disk_done
+    ; "            Drive N: "
+    mov  s_drive_label, a0
+    call bios_print
+    mov  i10, a0
+    call bios_print_dec
+    mov  58, a0            ; ':'
+    call bios_putchar
+    mov  32, a0
+    call bios_putchar
+    ; DISK_SECTORS=0x02, a1=disk_id
+    mov  2, a0
+    mov  i10, a1
+    int  0x04
+    call bios_print_dec
+    mov  s_drive_sectors, a0
+    call bios_print
+    inc  i10
+    goto bios_post_disk_enum
+bios_post_disk_done:
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+bios_post_disk_none:
+    mov  s_disk_none, a0
+    call bios_print
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  BIOS SETUP MENU
+; ════════════════════════════════════════════════════════════════
+
+bios_setup_menu:
+    push i8
+    push i9
+    push i10
+    call bios_kb_flush
+
+bios_setup_redraw:
+    mov  s_setup_top, a0
+    call bios_print
+
+    ; option 1: current boot disk pref
+    mov  s_setup_opt1, a0
+    call bios_print
+    mov  0x00001015, i8    ; ADA_CMOS_BOOT
+    movb [i8], i9
+    eq   i9, 0xFF, c0
+    jne  c0, bios_setup_show_auto
+    mov  i9, a0
+    call bios_print_dec
+    mov  10, a0
+    call bios_putchar
+    goto bios_setup_show_flag
+bios_setup_show_auto:
+    mov  s_setup_auto, a0
+    call bios_print
+
+bios_setup_show_flag:
+    ; option 2: verbose POST flag
+    mov  s_setup_opt2, a0
+    call bios_print
+    mov  0x00001016, i8    ; ADA_CMOS_FLAGS
+    movb [i8], i9
+    and  i9, 1, i9
+    eq   i9, 1, c0
+    jne  c0, bios_setup_flag_off
+    mov  s_setup_on, a0
+    call bios_print
+    goto bios_setup_get_key
+bios_setup_flag_off:
+    mov  s_setup_off, a0
+    call bios_print
+
+bios_setup_get_key:
+    mov  s_setup_prompt, a0
+    call bios_print
+    call bios_kb_read
+    mov  a0, i10
+
+    ; '1' → change boot disk
+    eq   i10, 49, c0
+    je   c0, bios_setup_change_disk
+
+    ; '2' → toggle verbose POST
+    eq   i10, 50, c0
+    je   c0, bios_setup_toggle_post
+
+    ; 'S'/'s' → save + exit
+    eq   i10, 83, c0
+    je   c0, bios_setup_save
+    eq   i10, 115, c0
+    je   c0, bios_setup_save
+
+    ; 'X'/'x' → exit no save
+    eq   i10, 88, c0
+    je   c0, bios_setup_nosave
+    eq   i10, 120, c0
+    je   c0, bios_setup_nosave
+
+    mov  s_setup_bad, a0
+    call bios_print
+    goto bios_setup_redraw
+
+bios_setup_change_disk:
+    mov  s_setup_disk_q, a0
+    call bios_print
+    call bios_kb_read
+    mov  a0, i9
+    ; 'A'/'a' → auto
+    eq   i9, 65, c0
+    je   c0, bios_setup_disk_auto
+    eq   i9, 97, c0
+    je   c0, bios_setup_disk_auto
+    ; digit '0'-'3'
+    sub  i9, 48, i9
+    lt   i9, 0, c0
+    je   c0, bios_setup_disk_bad
+    lte  i9, 3, c0
+    jne  c0, bios_setup_disk_bad
+    mov  0x00001015, i8
+    movb i9, [i8]
+    goto bios_setup_redraw
+bios_setup_disk_auto:
+    mov  0x00001015, i8
+    mov  0xFF, i9
+    movb i9, [i8]
+    goto bios_setup_redraw
+bios_setup_disk_bad:
+    mov  s_setup_bad, a0
+    call bios_print
+    goto bios_setup_redraw
+
+bios_setup_toggle_post:
+    mov  0x00001016, i8
+    movb [i8], i9
+    xor  i9, 1, i9
+    movb i9, [i8]
+    goto bios_setup_redraw
+
+bios_setup_save:
+    ; stamp CMOS signature
+    mov  0x00001024, i8
+    mov  0xC0FFEE00, i9
+    mov  i9, [i8]
+    mov  s_setup_saved, a0
+    call bios_print
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+bios_setup_nosave:
+    mov  s_setup_exit, a0
+    call bios_print
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  F2 COUNTDOWN WINDOW
+;  3-second countdown, polling keyboard every 50 ms.
+;  → c0 = 1 if F2/'2' pressed, 0 if timed out or other key.
+; ════════════════════════════════════════════════════════════════
+
+bios_f2_window:
+    push i8
+    push i9
+    push i10
+    call bios_kb_flush
+    mov  3, i8             ; 3 seconds
+
+bios_f2_sec_loop:
+    ; print countdown line
+    mov  s_f2_prompt, a0
+    call bios_print
+    mov  i8, a0
+    call bios_print_dec
+    mov  s_f2_sec, a0
+    call bios_print
+
+    mov  20, i9            ; 20 × 50ms = 1 s
+
+bios_f2_poll:
+    ; sleep 50 ms
+    mov  50, a0
+    call bios_sleep_ms
+
+    call bios_kb_poll
+    eq   a0, 0, c0
+    je   c0, bios_f2_no_key
+
+    ; key pressed
+    ; F2 = 0x3C or '2' (0x32)
+    eq   a0, 0x3C, c0
+    je   c0, bios_f2_yes
+    eq   a0, 50, c0
+    je   c0, bios_f2_yes
+
+    ; any other key → skip
+    mov  s_f2_skip, a0
+    call bios_print
+    ; return c0=0
+    ne   i8, i8, c0        ; i8 != i8 is always false → c0=0
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+bios_f2_no_key:
+    dec  i9
+    ne   i9, 0, c0
+    je   c0, bios_f2_poll
+
+    ; 1 second elapsed, overwrite with CR
+    mov  s_f2_cr, a0
+    call bios_print
+    dec  i8
+    ne   i8, 0, c0
+    je   c0, bios_f2_sec_loop
+
+    ; timeout
+    mov  s_f2_skip, a0
+    call bios_print
+    ne   i8, i8, c0        ; c0 = 0
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+bios_f2_yes:
+    mov  s_f2_entry, a0
+    call bios_print
+    eq   i8, i8, c0        ; c0 = 1
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  BOOT DEVICE SELECTION
+;  Reads CMOS pref → picks disk → writes ADA_BOOT_DISK.
+;  → c0 = 1 if disk chosen, 0 if no disks.
+; ════════════════════════════════════════════════════════════════
+
+bios_select_boot:
+    push i8
+    push i9
+    push i10
+
+    ; i9 = disk count
+    mov  0x0000100F, i8    ; ADA_DISK_CNT
+    movb [i8], i9
+
+    eq   i9, 0, c0
+    je   c0, bios_sb_none
+
+    ; read CMOS boot pref
+    mov  0x00001015, i8    ; ADA_CMOS_BOOT
+    movb [i8], i10
+
+    ; 0xFF = auto → pick disk 0
+    eq   i10, 0xFF, c0
+    jne  c0, bios_sb_auto
+    ; explicit: validate in range
+    lt   i10, i9, c0
+    jne  c0, bios_sb_set
+    ; out of range → auto
+bios_sb_auto:
+    mov  0, i10
+
+bios_sb_set:
+    mov  0x00001014, i8    ; ADA_BOOT_DISK
+    movb i10, [i8]
+    mov  s_boot_disk_lbl, a0
+    call bios_print
+    mov  i10, a0
+    call bios_print_dec
+    mov  10, a0
+    call bios_putchar
+    eq   i10, i10, c0      ; c0 = 1
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+bios_sb_none:
+    mov  s_boot_disk_none, a0
+    call bios_print
+    ne   i9, i9, c0        ; c0 = 0
+    pop  i10
+    pop  i9
+    pop  i8
+    ret
+
+
+; ════════════════════════════════════════════════════════════════
+;  ABIOS RESET ENTRY POINT
+; ════════════════════════════════════════════════════════════════
+
+global abios_reset:
+
+    ; ── 1. stack ─────────────────────────────────────────────
+    mov  0x03F00000, sp
+
+    ; ── 2. ADA init ──────────────────────────────────────────
+    ; ADA_HEAP_PTR = 0x02000000
+    mov  0x00001010, i0
+    mov  0x02000000, i1
+    mov  i1, [i0]
+    ; ADA_ATTR = 0x07
+    mov  0x0000100E, i0
+    mov  0x07, i1
+    movb i1, [i0]
+    ; ADA_BIOS_FLAG = 0x00AB1050
+    mov  0x00001020, i0
+    mov  0x00AB1050, i1
+    mov  i1, [i0]
+
+    ; ── 3. banner ────────────────────────────────────────────
+    mov  s_sep_thick, a0
+    call bios_print
+    mov  s_blank, a0
+    call bios_print
+    mov  s_title1, a0
+    call bios_print
+    mov  s_title2, a0
+    call bios_print
+    mov  s_blank, a0
+    call bios_print
+    mov  s_sep_thin, a0
+    call bios_print
+
+    ; ── 4. IVT install ───────────────────────────────────────
+    mov  0x30, a0
+    call bios_post_set
+    call bios_install_ivt
+    mov  s_ivt_ok, a0
+    call bios_print
+    mov  s_sep_thin, a0
+    call bios_print
+
+    ; ── 5. POST ──────────────────────────────────────────────
+    mov  s_post_hdr, a0
+    call bios_print
+    mov  s_blank, a0
+    call bios_print
+
+    call bios_post_cpu
+    call bios_post_fpu
+    call bios_post_mem
+    call bios_post_video
+    call bios_post_cmos
+    call bios_post_disk
+
+    ; checkpoint: POST done
+    mov  0xAA, a0
+    call bios_post_set
+
+    mov  s_blank, a0
+    call bios_print
+    mov  s_sep_thin, a0
+    call bios_print
+
+    ; ── 6. boot summary (F2/setup removed) ──────────────────
+abios_boot_summary:
+    mov  s_blank, a0
+    call bios_print
+    mov  s_sep_thin, a0
+    call bios_print
+    mov  s_boot_hdr, a0
+    call bios_print
+    mov  s_blank, a0
+    call bios_print
+
+    call bios_select_boot
+
+    ; print RTC uptime
+    mov  s_boot_rtc_lbl, a0
+    call bios_print
+    call bios_print_rtc
+    mov  s_nl, a0
+    call bios_print
+
+    mov  s_blank, a0
+    call bios_print
+    mov  s_sep_thick, a0
+    call bios_print
+
+    ; ── 8. hand off or halt ───────────────────────────────────
+    ; check ADA_DISK_CNT
+    mov  0x0000100F, i0
+    movb [i0], i1
+    eq   i1, 0, c0
+    je   c0, abios_halt
+
+    mov  s_handoff, a0
+    call bios_print
+    mov  0x00001C00, i0
+    goto i0
+
+abios_halt:
+    mov  s_no_boot, a0
+    call bios_print
+    halt
